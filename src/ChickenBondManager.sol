@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.10;
-import '@openzeppelin/contracts/utils/math/Math.sol';
-import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
-import './utils/ChickenMath.sol';
-import './Interfaces/IBondNFT.sol';
-import './Interfaces/IChickenBondManager.sol';
-import './RangePoolProxy.sol';
-import './SimpleStrategy.sol';
-import './BoostToken.sol';
-import './LPToken.sol';
+import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./utils/ChickenMath.sol";
+import "./Interfaces/IBondNFT.sol";
+import "./Interfaces/IChickenBondManager.sol";
+import "./RangePoolProxy.sol";
+import "./SimpleStrategy.sol";
+import "./BoostToken.sol";
+import "./Token.sol";
 
 contract ChickenBondManager is ChickenMath, IChickenBondManager {
   RangePoolProxy public immutable rangePoolProxy;
-  LPToken public immutable lpToken;
+  Token public immutable token;
   IBondNFT public immutable bondNFT;
   BoostToken public immutable boostToken;
 
   uint256 public immutable CHICKEN_IN_AMM_FEE;
 
   uint256 private pendingAmount;
-  uint256 private permanentAmount;
+  uint256 private exitAmount;
 
   uint256 public ammStakingRewards;
   uint256 public firstChickenInTime;
@@ -65,7 +65,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     uint256 bondId,
     uint256 bondedAmount,
     uint256 boostTokenAmount,
-    uint256 lpTokenSurplus,
+    uint256 tokenSurplus,
     uint256 chickenInFeeAmount,
     bool migration
   );
@@ -78,14 +78,14 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   constructor(DeployAddresses memory deployedAddresses, DeployParams memory params) {
     bondNFT = IBondNFT(deployedAddresses.bondNFT);
     rangePoolProxy = RangePoolProxy(deployedAddresses.rangePoolProxy);
-    lpToken = LPToken(rangePoolProxy.lpToken());
-    boostToken = new BoostToken(ERC20(lpToken));
+    token = Token(address(rangePoolProxy.lpToken()));
+    boostToken = new BoostToken(ERC20(token));
 
     deploymentTimestamp = block.timestamp;
     targetAverageAgeSeconds = params.targetAverageAgeSeconds;
     accrualParameter = params.initialAccrualParameter * DECIMAL_PRECISION;
     minimumAccrualParameter = params.minimumAccrualParameter * DECIMAL_PRECISION;
-    require(minimumAccrualParameter != 0, 'CBM: Min accrual parameter cannot be zero');
+    require(minimumAccrualParameter != 0, "CBM: Min accrual parameter cannot be zero");
 
     accrualAdjustmentMultiplier = 1e18 - params.accrualAdjustmentRate;
     accrualAdjustmentPeriodSeconds = params.accrualAdjustmentPeriodSeconds;
@@ -94,7 +94,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     BOOTSTRAP_PERIOD_CHICKEN_IN = params.bootstrapPeriodChickenIn;
     BOOTSTRAP_PERIOD_REDEEM = params.bootstrapPeriodRedeem;
     MIN_BTOKEN_SUPPLY = params.minBoostTokenSupply;
-    require(params.minBondAmount != 0, 'CBM: MIN BOND AMOUNT parameter cannot be zero'); // We can still use 1e-18
+    require(params.minBondAmount != 0, "CBM: MIN BOND AMOUNT parameter cannot be zero"); // We can still use 1e-18
     MIN_BOND_AMOUNT = params.minBondAmount;
   }
 
@@ -123,12 +123,12 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     returns (
       uint256 pending,
       uint256 reserve,
-      uint256 permanent
+      uint256 exit
     )
   {
     pending = pendingAmount;
     reserve = _reserveAmount();
-    permanent = permanentAmount;
+    exit = exitAmount;
   }
 
   function calcAccruedBoostToken(uint256 _bondID) external view returns (uint256) {
@@ -167,7 +167,6 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     if (totalBoostTokenSupply == 0) {
       return 1e18;
     }
-    /* TODO The reserve amount should take into consideration the fees that have not been claimed and converted to LP yet. */
     uint256 reserve = _reserveAmount() + SimpleStrategy(rangePoolProxy.strategy()).fees(); // This needs to be updated on the actual integration with RangePools
     return (reserve * 1e18) / totalBoostTokenSupply;
   }
@@ -189,7 +188,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     pendingAmount += _amountToBond;
     totalWeightedStartTimes += _amountToBond * block.timestamp;
 
-    lpToken.transferFrom(msg.sender, address(this), _amountToBond);
+    token.transferFrom(msg.sender, address(this), _amountToBond);
 
     emit BondCreated(msg.sender, bondID, _amountToBond);
 
@@ -204,8 +203,8 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     bytes32 r,
     bytes32 s
   ) external returns (uint256) {
-    if (lpToken.allowance(owner, address(this)) < amount) {
-      lpToken.permit(owner, address(this), amount, deadline, v, r, s);
+    if (token.allowance(owner, address(this)) < amount) {
+      token.permit(owner, address(this), amount, deadline, v, r, s);
     }
     return createBond(amount);
   }
@@ -253,26 +252,26 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
       bond.bondedAmount
     );
 
-    // Get lpToken amount to acquire from the bond in proportion to the system's current backing ratio, in order to maintain said ratio.
-    uint256 lpTokenToAcquire = _calcAccruedAmount(bond.startTime, bondAmountMinusChickenInFee, updatedAccrualParameter);
+    // Get token amount to acquire from the bond in proportion to the system's current backing ratio, in order to maintain said ratio.
+    uint256 tokenToAcquire = _calcAccruedAmount(bond.startTime, bondAmountMinusChickenInFee, updatedAccrualParameter);
     uint256 backingRatio = calcSystemBackingRatio(); // Get backing ratio and accrued bTKN
-    uint256 accruedBoostToken = (lpTokenToAcquire * 1e18) / backingRatio;
+    uint256 accruedBoostToken = (tokenToAcquire * 1e18) / backingRatio;
     idToBondData[_bondID].claimedBoostedToken = uint64(Math.min(accruedBoostToken / 1e18, type(uint64).max)); // to units and uint64
     idToBondData[_bondID].status = BondStatus.chickenedIn;
     idToBondData[_bondID].endTime = uint64(block.timestamp);
 
     countChickenIn += 1;
-    pendingAmount -= bond.bondedAmount; // Subtract the bonded amount from the total pending lpTokens (and implicitly increase the total reserve)
+    pendingAmount -= bond.bondedAmount; // Subtract the bonded amount from the total pending tokens (and implicitly increase the total reserve)
     totalWeightedStartTimes -= bond.bondedAmount * bond.startTime;
-    uint256 lpTokenSurplus = bondAmountMinusChickenInFee - lpTokenToAcquire; // Get the remaining lpTokenSurplus from the lpAmount to acquire from the bond
+    uint256 tokenSurplus = bondAmountMinusChickenInFee - tokenToAcquire; // Get the remaining tokenSurplus from the lpAmount to acquire from the bond
 
-    // Handle the lpTokenSurplus from the chicken-in:
+    // Handle the tokenSurplus from the chicken-in:
     if (!migration) {
-      // In normal mode, add the lpTokenSurplus to the permanent bucket by increasing the permament tracker. This implicitly decreases the reserve.
-      permanentAmount += lpTokenSurplus;
+      // In normal mode, add the tokenSurplus to the exit bucket by increasing the permament tracker. This implicitly decreases the reserve.
+      exitAmount += tokenSurplus;
     } else {
-      // In migration mode, withdraw lpTokenSurplus from reserve and refund to bonder
-      uint256 tokenToRefund = Math.min(lpTokenSurplus, _reserveAmount());
+      // In migration mode, withdraw tokenSurplus from reserve and refund to bonder
+      uint256 tokenToRefund = Math.min(tokenSurplus, _reserveAmount());
       if (tokenToRefund != 0) {
         _withdraw(msg.sender, tokenToRefund);
       }
@@ -290,7 +289,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
       _bondID,
       bond.bondedAmount,
       accruedBoostToken,
-      lpTokenSurplus,
+      tokenSurplus,
       chickenInFeeAmount,
       migration
     );
@@ -302,7 +301,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
 
     require(
       block.timestamp >= firstChickenInTime + BOOTSTRAP_PERIOD_REDEEM,
-      'CBM: Redemption after first chicken in must wait until bootstrap period is over'
+      "CBM: Redemption after first chicken in must wait until bootstrap period is over"
     );
 
     uint256 reserve = _updateReserve();
@@ -329,7 +328,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
 
     require(
       block.timestamp >= _bondStartTime + BOOTSTRAP_PERIOD_CHICKEN_IN,
-      'CBM: First chicken in must wait until bootstrap period is over'
+      "CBM: First chicken in must wait until bootstrap period is over"
     );
     firstChickenInTime = block.timestamp;
 
@@ -344,12 +343,12 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   }
 
   function _reserveAmount() internal view returns (uint256) {
-    return lpToken.balanceOf(address(this)) - (pendingAmount + permanentAmount);
+    return token.balanceOf(address(this)) - (pendingAmount + exitAmount);
   }
 
   function _distributeStakingContractRewards(uint256 amount) internal {
     ammStakingRewards += amount;
-    lpToken.burn(address(this), amount);
+    token.burn(address(this), amount);
   }
 
   // Internal getter for calculating the bond boostToken cap based on bonded amount and backing ratio
@@ -376,13 +375,13 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     return (chickenInFeeAmount, bondAmountMinusChickenInFee);
   }
 
-  /* _calcAccruedAmount: internal getter for calculating accrued lpToken amount for a given bond.
+  /* _calcAccruedAmount: internal getter for calculating accrued token amount for a given bond.
    *
-   * This function is unit-agnostic. It can be used to calculate a bonder's accrrued boostedToken, or the lpToken that the
+   * This function is unit-agnostic. It can be used to calculate a bonder's accrrued boostedToken, or the token that the
    * CB system would acquire (i.e. receive to the reserve bucket) if the bond were Chickened In now.
    *
    * For the bonder, _capAmount is their boostToken cap.
-   * For the CB system, _capAmount is the lpToken bond amount (less the Chicken In fee).
+   * For the CB system, _capAmount is the token bond amount (less the Chicken In fee).
    */
   function _calcAccruedAmount(
     uint256 _startTime,
@@ -409,8 +408,8 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   }
 
   function _withdraw(address _to, uint256 _amount) internal {
-    uint256 amountToWithdraw = Math.min(_amount, lpToken.balanceOf(address(this)));
-    lpToken.transfer(_to, amountToWithdraw);
+    uint256 amountToWithdraw = Math.min(_amount, token.balanceOf(address(this)));
+    token.transfer(_to, amountToWithdraw);
   }
 
   function _updateAccrualParameter() internal returns (uint256) {
@@ -509,28 +508,28 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   // --- 'require' functions
 
   function _requireNonZeroAmount(uint256 _amount) internal pure {
-    require(_amount != 0, 'CBM: Amount must be > 0');
+    require(_amount != 0, "CBM: Amount must be > 0");
   }
 
   function _requireRedemptionNotDepletingBoostToken(uint256 amountToRedeem) internal view {
     if (!migration) {
-      require(amountToRedeem + MIN_BTOKEN_SUPPLY <= boostToken.totalSupply(), 'CBM: Cannot redeem below min supply');
+      require(amountToRedeem + MIN_BTOKEN_SUPPLY <= boostToken.totalSupply(), "CBM: Cannot redeem below min supply");
     }
   }
 
   function _requireCallerOwnsBond(uint256 _bondID) internal view {
-    require(msg.sender == bondNFT.ownerOf(_bondID), 'CBM: Caller must own the bond');
+    require(msg.sender == bondNFT.ownerOf(_bondID), "CBM: Caller must own the bond");
   }
 
   function _requireMinBond(uint256 _amount) internal view {
-    require(_amount >= MIN_BOND_AMOUNT, 'CBM: Bond minimum amount not reached');
+    require(_amount >= MIN_BOND_AMOUNT, "CBM: Bond minimum amount not reached");
   }
 
   function _requireMigrationNotActive() internal view {
-    require(!migration, 'CBM: Migration must be not be active');
+    require(!migration, "CBM: Migration must be not be active");
   }
 
   function _requireActiveStatus(BondStatus status) internal pure {
-    require(status == BondStatus.active, 'CBM: Bond must be active');
+    require(status == BondStatus.active, "CBM: Bond must be active");
   }
 }

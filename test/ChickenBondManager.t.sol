@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import '@openzeppelin/contracts/token/ERC20/ERC20.sol';
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-import '../src/LPToken.sol';
-import '../src/BondNFT.sol';
-import '../src/BoostToken.sol';
-import '../src/RangePoolProxy.sol';
-import '../src/SimpleStrategy.sol';
+import "../src/LPToken.sol";
+import "../src/BondNFT.sol";
+import "../src/BoostToken.sol";
+import "../src/RangePoolProxy.sol";
+import "../src/SimpleStrategy.sol";
 
-import '../src/ChickenBondManager.sol';
-import '../src/Interfaces/IChickenBondManager.sol';
+import "../src/ChickenBondManager.sol";
+import "../src/Interfaces/IChickenBondManager.sol";
 
-import 'forge-std/Test.sol';
+import "forge-std/Test.sol";
 
 contract ChickenBondManagerTest is Test {
   struct Treasury {
     uint256 pending;
     uint256 reserve;
-    uint256 permanent;
+    uint256 exit;
   }
 
   ChickenBondManager cb;
@@ -42,7 +42,7 @@ contract ChickenBondManagerTest is Test {
   uint256 minBondAmount = 1 ether;
 
   function setUp() public {
-    bondNFT = new BondNFT('BondNFT', 'BNFT', 0);
+    bondNFT = new BondNFT("BondNFT", "BNFT", 0);
     strategy = new SimpleStrategy();
     rangePoolProxy = new RangePoolProxy(address(strategy));
     lpToken = rangePoolProxy.lpToken();
@@ -83,15 +83,15 @@ contract ChickenBondManagerTest is Test {
     uint256 amount = 10 ether;
     deposit(amount);
     uint256 currentBalance = lpToken.balanceOf(address(this));
-    assertTrue(amount == currentBalance, 'balance match');
+    assertTrue(amount == currentBalance, "balance match");
     withdraw(amount);
-    assertTrue(lpToken.balanceOf(address(this)) == currentBalance - amount, 'balance match');
+    assertTrue(lpToken.balanceOf(address(this)) == currentBalance - amount, "balance match");
   }
 
   function testCreateBond() public {
     uint256 amount = 10 ether;
     uint256 bondId = createBond(amount);
-    assertTrue(lpToken.balanceOf(address(cb)) == amount, 'LP balance check');
+    assertTrue(lpToken.balanceOf(address(cb)) == amount, "LP balance check");
     checkBondData(bondId, amount, 0, uint64(block.timestamp), 0, uint8(IChickenBondManager.BondStatus.active));
     checkTreasury(amount, 0, 0);
   }
@@ -105,7 +105,7 @@ contract ChickenBondManagerTest is Test {
 
     cb.chickenOut(bondId);
 
-    assertTrue(lpToken.balanceOf(address(this)) == amount, 'LP balance check');
+    assertTrue(lpToken.balanceOf(address(this)) == amount, "LP balance check");
     checkTreasury(0, 0, 0);
     checkBondData(
       bondId,
@@ -130,7 +130,7 @@ contract ChickenBondManagerTest is Test {
     uint256 feeDiscountedAmount = amount - chickenInfee;
     uint256 expectedAccruedAmount = feeDiscountedAmount / 2;
 
-    assertTrue(btokenAccrued == expectedAccruedAmount, 'token half life');
+    assertTrue(btokenAccrued == expectedAccruedAmount, "token half life");
 
     cb.chickenIn(bondId);
 
@@ -162,10 +162,10 @@ contract ChickenBondManagerTest is Test {
     uint256 cacheAmmRewards = cb.ammStakingRewards();
 
     {
-      (uint256 cachePending, uint256 cacheReserve, uint256 cachePermanent) = cb.getTreasury();
+      (uint256 cachePending, uint256 cacheReserve, uint256 cacheExit) = cb.getTreasury();
       cacheTreasury.pending = cachePending;
       cacheTreasury.reserve = cacheReserve;
-      cacheTreasury.permanent = cachePermanent;
+      cacheTreasury.exit = cacheExit;
     }
 
     // Second Bond
@@ -181,14 +181,14 @@ contract ChickenBondManagerTest is Test {
 
     assertTrue(
       boostToken.balanceOf(address(this)) == accruedBoostTokens + cacheBoostTokenBalance,
-      'Boost token balance check'
+      "Boost token balance check"
     );
-    assertTrue(accruedBoostTokens == expectedBoostedAccruedAmount, 'Calculation of accrued boosted tokens');
+    assertTrue(accruedBoostTokens == expectedBoostedAccruedAmount, "Calculation of accrued boosted tokens");
 
     checkTreasury(
       0,
       (((amount - chickenInfee) / 2) + accruedFees + cacheTreasury.reserve),
-      ((amount - chickenInfee) / 2) + cacheTreasury.permanent
+      ((amount - chickenInfee) / 2) + cacheTreasury.exit
     );
 
     checkBondData(
@@ -213,8 +213,8 @@ contract ChickenBondManagerTest is Test {
     uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18); // Rewards to AMM
     uint256 expectedAccruedAmount = (amount - chickenInfee) / 2;
     cb.redeem(boostToken.balanceOf(address(this)));
-    assertTrue(boostToken.balanceOf(address(this)) == 0, 'boostToken balance check');
-    assertTrue(lpToken.balanceOf(address(this)) == expectedAccruedAmount + accruedFees, 'LP balance check');
+    assertTrue(boostToken.balanceOf(address(this)) == 0, "boostToken balance check");
+    assertTrue(lpToken.balanceOf(address(this)) == expectedAccruedAmount + accruedFees, "LP balance check");
     checkTreasury(0, 0, expectedAccruedAmount);
   }
 
@@ -239,12 +239,12 @@ contract ChickenBondManagerTest is Test {
   function checkTreasury(
     uint256 pending,
     uint256 reserve,
-    uint256 permanent
+    uint256 exit
   ) public {
-    (uint256 _pending, uint256 _reserve, uint256 _permanent) = cb.getTreasury();
-    assertTrue(pending == _pending, 'Pending bucket check');
-    assertTrue(reserve == _reserve, 'Reserve bucket check');
-    assertTrue(permanent == _permanent, 'Permanent bucket check');
+    (uint256 _pending, uint256 _reserve, uint256 _exit) = cb.getTreasury();
+    assertTrue(pending == _pending, "Pending bucket check");
+    assertTrue(reserve == _reserve, "Reserve bucket check");
+    assertTrue(exit == _exit, "Exit bucket check");
   }
 
   function checkBondData(
@@ -257,14 +257,14 @@ contract ChickenBondManagerTest is Test {
   ) public {
     (uint256 _lpTokenAmount, uint64 _claimedBoostedToken, uint64 _startTime, uint64 _endTime, uint8 _status) = cb
       .getBondData(bondId);
-    assertTrue(_lpTokenAmount == bondedAmount, 'Check bondedAmount');
-    assertTrue(_claimedBoostedToken == claimedBoostedToken, 'Check claimedBoostedToken');
-    assertTrue(_startTime == startTime, 'Check startTime');
-    assertTrue(_endTime == endTime, 'Check endTime');
-    assertTrue(_status == status, 'Check status');
+    assertTrue(_lpTokenAmount == bondedAmount, "Check bondedAmount");
+    assertTrue(_claimedBoostedToken == claimedBoostedToken, "Check claimedBoostedToken");
+    assertTrue(_startTime == startTime, "Check startTime");
+    assertTrue(_endTime == endTime, "Check endTime");
+    assertTrue(_status == status, "Check status");
   }
 
   function checkStakingRewards(uint256 _stakingRewards) public {
-    assertTrue(cb.ammStakingRewards() == _stakingRewards, 'Staking rewards check');
+    assertTrue(cb.ammStakingRewards() == _stakingRewards, "Staking rewards check");
   }
 }

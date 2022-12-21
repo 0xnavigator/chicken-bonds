@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.10;
 
-import '@openzeppelin/contracts/access/Ownable.sol';
-import '@openzeppelin/contracts/token/ERC20/ERC20.sol';
-import './LPToken.sol';
-import './SimpleStrategy.sol';
-import './ChickenBondManager.sol';
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "./LPToken.sol";
+import "./SimpleStrategy.sol";
+import "./ChickenBondManager.sol";
 
 contract RangePoolProxy is Ownable {
   LPToken public lpToken;
@@ -13,7 +13,7 @@ contract RangePoolProxy is Ownable {
   address public chickenBondManager;
 
   constructor(address strategy_) {
-    lpToken = new LPToken('UNI_V3_LP_ID', 'LP_ID');
+    lpToken = new LPToken("UNI_V3_LP_ID", "LP_ID");
     strategy = SimpleStrategy(strategy_);
   }
 
@@ -27,7 +27,7 @@ contract RangePoolProxy is Ownable {
   }
 
   function compound() external returns (uint256 amountCompounded) {
-    require(chickenBondManager != address(0), 'RangePoolProxy: ChickenBondManager not set');
+    require(chickenBondManager != address(0), "RangePoolProxy: ChickenBondManager not set");
     amountCompounded = strategy.compound();
     lpToken.mint(chickenBondManager, amountCompounded);
   }
