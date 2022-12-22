@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.10;
-import '@openzeppelin/contracts/utils/Strings.sol';
-import './Token.sol';
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "./Token.sol";
 
 //import "forge-std/console.sol";
 
 contract BoostToken is Token {
-  constructor(ERC20 lpToken)
-    Token(string(abi.encodePacked('BOOST_', lpToken.name())), string(abi.encodePacked('BOOST_', lpToken.symbol())))
+  constructor(address token)
+    Token(
+      string(abi.encodePacked("BOOST_", ERC20(token).name())),
+      string(abi.encodePacked("BOOST_", ERC20(token).symbol()))
+    )
   {}
 
   function mint(address _to, uint256 _amount) external override onlyOwner {

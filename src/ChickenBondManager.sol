@@ -1,48 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.10;
-import '@openzeppelin/contracts/utils/math/Math.sol';
-import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
-import './utils/ChickenMath.sol';
-import './Interfaces/IBondNFT.sol';
-import './Interfaces/IChickenBondManager.sol';
-import './RangePoolProxy.sol';
-import './SimpleStrategy.sol';
-import './BoostToken.sol';
-import './LPToken.sol';
+import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./utils/ChickenMath.sol";
+import "./Interfaces/IBondNFT.sol";
+import "./Interfaces/IChickenBondManager.sol";
+import "./Interfaces/IChickenBondController.sol";
+import "./SimpleStrategy.sol";
+import "./BoostToken.sol";
+import "./Token.sol";
 
 contract ChickenBondManager is ChickenMath, IChickenBondManager {
-  RangePoolProxy public immutable rangePoolProxy;
-  LPToken public immutable lpToken;
-  IBondNFT public immutable bondNFT;
-  BoostToken public immutable boostToken;
-
-  uint256 public immutable CHICKEN_IN_AMM_FEE;
+  Token public token;
+  IBondNFT public bondNFT;
+  BoostToken public boostToken;
+  IChickenBondController public controller;
 
   uint256 private pendingAmount;
-  uint256 private permanentAmount;
+  uint256 private reserveAmount;
 
-  uint256 public ammStakingRewards;
   uint256 public firstChickenInTime;
   uint256 public totalWeightedStartTimes;
   uint256 public lastRedemptionTime;
-  mapping(uint256 => BondData) private idToBondData;
-
-  bool public migration;
-
   uint256 public countChickenIn;
   uint256 public countChickenOut;
 
-  // --- Constants ---
+  mapping(uint256 => BondData) private idToBondData;
 
+  bool public inExitMode;
+
+  // --- Constants ---
   uint256 constant MAX_UINT256 = type(uint256).max;
-  uint256 public constant SECONDS_IN_ONE_MINUTE = 60;
   uint256 public immutable BOOTSTRAP_PERIOD_CHICKEN_IN;
   uint256 public immutable BOOTSTRAP_PERIOD_REDEEM;
-  uint256 public immutable MIN_BTOKEN_SUPPLY;
   uint256 public immutable MIN_BOND_AMOUNT;
 
   // --- Accrual control variables ---
-
   uint256 public immutable deploymentTimestamp;
   uint256 public immutable targetAverageAgeSeconds; // Average outstanding bond age above which the controller will adjust `accrualParameter` in order to speed up accrual.
   uint256 public immutable minimumAccrualParameter; // Stop adjusting `accrualParameter` when this value is reached.
@@ -57,7 +50,6 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   uint256 public accrualAdjustmentPeriodCount;
 
   // --- Events ---
-
   event LastRedemptionTimeUpdated(uint256 _lastRedemptionFeeOpTime);
   event BondCreated(address indexed bonder, uint256 bondId, uint256 amount);
   event BondClaimed(
@@ -65,42 +57,33 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     uint256 bondId,
     uint256 bondedAmount,
     uint256 boostTokenAmount,
-    uint256 lpTokenSurplus,
-    uint256 chickenInFeeAmount,
-    bool migration
+    uint256 exitLiquidity
   );
 
   event BondCancelled(address indexed bonder, uint256 bondId, uint256 principalTokenAmount);
-  event BoostTokenRedeemed(address indexed redeemer, uint256 boostTokenAmount, uint256 bondedAmount);
-  event MigrationTriggered(uint256 previousPermanentToken);
+  event BoostTokenRedeemed(address indexed redeemer, uint256 amount);
   event AccrualParameterUpdated(uint256 accrualParameter);
 
-  constructor(DeployAddresses memory deployedAddresses, DeployParams memory params) {
-    bondNFT = IBondNFT(deployedAddresses.bondNFT);
-    rangePoolProxy = RangePoolProxy(deployedAddresses.rangePoolProxy);
-    lpToken = LPToken(rangePoolProxy.lpToken());
-    boostToken = new BoostToken(ERC20(lpToken));
+  constructor(DeployParams memory params) {
+    bondNFT = IBondNFT(params.bondNFT);
+    token = Token(params.token);
+    controller = IChickenBondController(params.controller);
+    boostToken = new BoostToken(address(token));
 
     deploymentTimestamp = block.timestamp;
     targetAverageAgeSeconds = params.targetAverageAgeSeconds;
     accrualParameter = params.initialAccrualParameter * DECIMAL_PRECISION;
     minimumAccrualParameter = params.minimumAccrualParameter * DECIMAL_PRECISION;
-    require(minimumAccrualParameter != 0, 'CBM: Min accrual parameter cannot be zero');
+    require(minimumAccrualParameter != 0, "ChickenBondManager: Min accrual parameter cannot be zero");
 
     accrualAdjustmentMultiplier = 1e18 - params.accrualAdjustmentRate;
     accrualAdjustmentPeriodSeconds = params.accrualAdjustmentPeriodSeconds;
 
-    CHICKEN_IN_AMM_FEE = params.chickenInAMMFee;
     BOOTSTRAP_PERIOD_CHICKEN_IN = params.bootstrapPeriodChickenIn;
     BOOTSTRAP_PERIOD_REDEEM = params.bootstrapPeriodRedeem;
-    MIN_BTOKEN_SUPPLY = params.minBoostTokenSupply;
-    require(params.minBondAmount != 0, 'CBM: MIN BOND AMOUNT parameter cannot be zero'); // We can still use 1e-18
+    require(params.minBondAmount != 0, "ChickenBondManager: MIN BOND AMOUNT parameter cannot be zero"); // We can still use 1e-18
     MIN_BOND_AMOUNT = params.minBondAmount;
   }
-
-  // --- Getter convenience functions ---
-
-  // Bond getters
 
   function getBondData(uint256 _bondID)
     external
@@ -123,58 +106,16 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     returns (
       uint256 pending,
       uint256 reserve,
-      uint256 permanent
+      uint256 exit
     )
   {
     pending = pendingAmount;
-    reserve = _reserveAmount();
-    permanent = permanentAmount;
-  }
-
-  function calcAccruedBoostToken(uint256 _bondID) external view returns (uint256) {
-    BondData memory bond = idToBondData[_bondID];
-
-    if (bond.status != BondStatus.active) {
-      return 0;
-    }
-
-    uint256 bondBoostTokenCap = _calcBondBoostTokenCap(
-      _getBondAmountMinusChickenInFee(bond.bondedAmount),
-      calcSystemBackingRatio()
-    );
-
-    (uint256 updatedAccrualParameter, ) = _calcUpdatedAccrualParameter(accrualParameter, accrualAdjustmentPeriodCount);
-    return _calcAccruedAmount(bond.startTime, bondBoostTokenCap, updatedAccrualParameter);
-  }
-
-  function calcBondBoostCap(uint256 _bondID) external view returns (uint256) {
-    uint256 backingRatio = calcSystemBackingRatio();
-
-    BondData memory bond = idToBondData[_bondID];
-
-    return _calcBondBoostTokenCap(_getBondAmountMinusChickenInFee(bond.bondedAmount), backingRatio);
-  }
-
-  function calcSystemBackingRatio() public view returns (uint256) {
-    uint256 totalBoostTokenSupply = boostToken.totalSupply();
-
-    /* TODO: Determine how to define the backing ratio when there is 0 boostToken and 0 reserve,
-     * i.e. before the first chickenIn. For now, return a backing ratio of 1. Note: Both quantities would be 0
-     * also when the boostToken supply is fully redeemed.
-     */
-    //if (totalBoostedTokenSupply == 0  && reserve == 0) {return 1e18;}
-    //if (totalBoostedTokenSupply == 0) {return MAX_UINT256;}
-    if (totalBoostTokenSupply == 0) {
-      return 1e18;
-    }
-    /* TODO The reserve amount should take into consideration the fees that have not been claimed and converted to LP yet. */
-    uint256 reserve = _reserveAmount() + SimpleStrategy(rangePoolProxy.strategy()).fees(); // This needs to be updated on the actual integration with RangePools
-    return (reserve * 1e18) / totalBoostTokenSupply;
+    reserve = reserveAmount;
+    exit = _exitAmount();
   }
 
   function createBond(uint256 _amountToBond) public returns (uint256) {
     _requireMinBond(_amountToBond);
-    _requireMigrationNotActive();
 
     _updateAccrualParameter();
 
@@ -189,7 +130,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     pendingAmount += _amountToBond;
     totalWeightedStartTimes += _amountToBond * block.timestamp;
 
-    lpToken.transferFrom(msg.sender, address(this), _amountToBond);
+    token.transferFrom(msg.sender, address(this), _amountToBond);
 
     emit BondCreated(msg.sender, bondID, _amountToBond);
 
@@ -204,8 +145,8 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     bytes32 r,
     bytes32 s
   ) external returns (uint256) {
-    if (lpToken.allowance(owner, address(this)) < amount) {
-      lpToken.permit(owner, address(this), amount, deadline, v, r, s);
+    if (token.allowance(owner, address(this)) < amount) {
+      token.permit(owner, address(this), amount, deadline, v, r, s);
     }
     return createBond(amount);
   }
@@ -225,164 +166,92 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     pendingAmount -= bond.bondedAmount;
     totalWeightedStartTimes -= bond.bondedAmount * bond.startTime;
 
-    // implicitly adds fees generated to the reserve.
+    // adds fees generated to the reserve.
+    _updateRatio();
     _withdraw(msg.sender, bond.bondedAmount);
-
     emit BondCancelled(msg.sender, _bondID, bond.bondedAmount);
   }
 
   function chickenIn(uint256 _bondID) external {
+    require(!inExitMode, "ChickenBondManager: Only chicken out allowed in exit mode");
+
     BondData memory bond = idToBondData[_bondID];
 
     _requireCallerOwnsBond(_bondID);
     _requireActiveStatus(bond.status);
 
     uint256 updatedAccrualParameter = _updateAccrualParameter();
-    uint256 reserve = _updateReserve(); // compound fees;
 
     /* Upon the first chicken-in after a) system deployment or b) redemption of the full boostToken supply, divert
      * any earned fees converted to lp to the bTKN-TKN AMM for fairness.
      *
-     * This is not done in migration mode since there is no need to send rewards to the staking contract.
+     * This is not done inExitMode since there is no need to send rewards to the staking contract.
      */
-    if (boostToken.totalSupply() == 0 && !migration) {
-      _firstChickenIn(bond.startTime, reserve);
+    if (boostToken.totalSupply() == 0 && !inExitMode) {
+      _firstChickenIn(bond.startTime);
     }
 
-    (uint256 chickenInFeeAmount, uint256 bondAmountMinusChickenInFee) = _getBondWithChickenInFeeApplied(
-      bond.bondedAmount
-    );
-
-    // Get lpToken amount to acquire from the bond in proportion to the system's current backing ratio, in order to maintain said ratio.
-    uint256 lpTokenToAcquire = _calcAccruedAmount(bond.startTime, bondAmountMinusChickenInFee, updatedAccrualParameter);
-    uint256 backingRatio = calcSystemBackingRatio(); // Get backing ratio and accrued bTKN
-    uint256 accruedBoostToken = (lpTokenToAcquire * 1e18) / backingRatio;
+    uint256 accruedBoostToken = _calcAccruedAmount(bond.startTime, bond.bondedAmount, updatedAccrualParameter);
     idToBondData[_bondID].claimedBoostedToken = uint64(Math.min(accruedBoostToken / 1e18, type(uint64).max)); // to units and uint64
     idToBondData[_bondID].status = BondStatus.chickenedIn;
     idToBondData[_bondID].endTime = uint64(block.timestamp);
 
     countChickenIn += 1;
-    pendingAmount -= bond.bondedAmount; // Subtract the bonded amount from the total pending lpTokens (and implicitly increase the total reserve)
+    pendingAmount -= bond.bondedAmount; // Subtract the bonded amount from the total pending tokens
+    reserveAmount += accruedBoostToken; // Increase the amount of the reserve
     totalWeightedStartTimes -= bond.bondedAmount * bond.startTime;
-    uint256 lpTokenSurplus = bondAmountMinusChickenInFee - lpTokenToAcquire; // Get the remaining lpTokenSurplus from the lpAmount to acquire from the bond
-
-    // Handle the lpTokenSurplus from the chicken-in:
-    if (!migration) {
-      // In normal mode, add the lpTokenSurplus to the permanent bucket by increasing the permament tracker. This implicitly decreases the reserve.
-      permanentAmount += lpTokenSurplus;
-    } else {
-      // In migration mode, withdraw lpTokenSurplus from reserve and refund to bonder
-      uint256 tokenToRefund = Math.min(lpTokenSurplus, _reserveAmount());
-      if (tokenToRefund != 0) {
-        _withdraw(msg.sender, tokenToRefund);
-      }
-    }
-
     boostToken.mint(msg.sender, accruedBoostToken);
+    uint256 exitLiquidity = accruedBoostToken - bond.bondedAmount;
+    _updateRatio();
 
-    // Transfer the chicken in fee to the TKN/bTKN AMM LP Rewards staking contract during normal mode.
-    if (!migration && _reserveAmount() >= chickenInFeeAmount) {
-      _distributeStakingContractRewards(chickenInFeeAmount);
-    }
-
-    emit BondClaimed(
-      msg.sender,
-      _bondID,
-      bond.bondedAmount,
-      accruedBoostToken,
-      lpTokenSurplus,
-      chickenInFeeAmount,
-      migration
-    );
+    emit BondClaimed(msg.sender, _bondID, bond.bondedAmount, accruedBoostToken, exitLiquidity);
   }
 
-  function redeem(uint256 amountToRedeem) external returns (uint256 lpAmount) {
-    _requireNonZeroAmount(amountToRedeem);
-    _requireRedemptionNotDepletingBoostToken(amountToRedeem);
+  function redeem(uint256 amount) external {
+    _requireNonZeroAmount(amount);
 
     require(
       block.timestamp >= firstChickenInTime + BOOTSTRAP_PERIOD_REDEEM,
-      'CBM: Redemption after first chicken in must wait until bootstrap period is over'
+      "ChickenBondManager: Redemption after first chicken in must wait until bootstrap period is over"
     );
+    require(boostToken.balanceOf(msg.sender) >= amount, "ChickenBondManager: You do not own enough boost tokens");
 
-    uint256 reserve = _updateReserve();
+    reserveAmount -= amount;
+    boostToken.burn(msg.sender, amount);
+    _withdraw(msg.sender, amount);
 
-    uint256 fractionToRedeem = (amountToRedeem * 1e18) / boostToken.totalSupply();
-    lpAmount = (reserve * fractionToRedeem) / 1e18;
-    _requireNonZeroAmount(lpAmount);
+    _updateRatio();
 
-    // Burn the redeemed boostedToken
-    boostToken.burn(msg.sender, amountToRedeem);
-    if (lpAmount != 0) _withdraw(msg.sender, lpAmount);
-
-    emit BoostTokenRedeemed(msg.sender, amountToRedeem, lpAmount);
+    emit BoostTokenRedeemed(msg.sender, amount);
   }
 
-  // --- Helper functions ---
-  /* Divert acquired yield to TKN/bTKN AMM LP rewards staking contract
-   * It happens on the very first chicken in event of the system, or any time that redemptions deplete bTKN total supply to zero
-   * Assumption: When there have been no chicken ins since the bTKN supply was set to 0 (either due to system deployment, or full bTKN redemption),
-   * all acquired TKN must necessarily be pure yield.
-   */
-  function _firstChickenIn(uint256 _bondStartTime, uint256 _cacheReserve) internal {
-    //assert(!migration); // we leave it as a comment so we can uncomment it for automated testing tools
+  function _firstChickenIn(uint256 _bondStartTime) internal {
+    //assert(!inExitMode); // we leave it as a comment so we can uncomment it for automated testing tools
 
     require(
       block.timestamp >= _bondStartTime + BOOTSTRAP_PERIOD_CHICKEN_IN,
-      'CBM: First chicken in must wait until bootstrap period is over'
+      "ChickenBondManager: First chicken in must wait until bootstrap period is over"
     );
     firstChickenInTime = block.timestamp;
 
-    if (_cacheReserve > 0) {
-      _distributeStakingContractRewards(_cacheReserve);
-    }
+    _updateRatio();
   }
 
-  function _updateReserve() internal returns (uint256) {
-    if (rangePoolProxy.fees() != 0) rangePoolProxy.compound();
-    return _reserveAmount();
+  function _exitAmount() internal view returns (uint256) {
+    return token.balanceOf(address(this)) - (pendingAmount + reserveAmount);
   }
 
-  function _reserveAmount() internal view returns (uint256) {
-    return lpToken.balanceOf(address(this)) - (pendingAmount + permanentAmount);
+  function _updateRatio() internal {
+    controller.updateRatio(pendingAmount, reserveAmount, _exitAmount());
   }
 
-  function _distributeStakingContractRewards(uint256 amount) internal {
-    ammStakingRewards += amount;
-    lpToken.burn(address(this), amount);
-  }
-
-  // Internal getter for calculating the bond boostToken cap based on bonded amount and backing ratio
-  function _calcBondBoostTokenCap(uint256 _bondedAmount, uint256 _backingRatio) internal pure returns (uint256) {
-    // TODO: potentially refactor this -  i.e. have a (1 / backingRatio) function for more precision
-    return (_bondedAmount * 1e18) / _backingRatio;
-  }
-
-  function _getBondAmountMinusChickenInFee(uint256 _bondTokenAmount) internal view returns (uint256) {
-    (, uint256 bondAmountMinusChickenInFee) = _getBondWithChickenInFeeApplied(_bondTokenAmount);
-    return bondAmountMinusChickenInFee;
-  }
-
-  function _getBondWithChickenInFeeApplied(uint256 _bondTokenAmount) internal view returns (uint256, uint256) {
-    // Apply zero fee in migration mode
-    if (migration) {
-      return (0, _bondTokenAmount);
-    }
-
-    // Otherwise, apply the constant fee rate
-    uint256 chickenInFeeAmount = (_bondTokenAmount * CHICKEN_IN_AMM_FEE) / 1e18;
-    uint256 bondAmountMinusChickenInFee = _bondTokenAmount - chickenInFeeAmount;
-
-    return (chickenInFeeAmount, bondAmountMinusChickenInFee);
-  }
-
-  /* _calcAccruedAmount: internal getter for calculating accrued lpToken amount for a given bond.
+  /* _calcAccruedAmount: internal getter for calculating accrued token amount for a given bond.
    *
-   * This function is unit-agnostic. It can be used to calculate a bonder's accrrued boostedToken, or the lpToken that the
+   * This function is unit-agnostic. It can be used to calculate a bonder's accrrued boostedToken, or the token that the
    * CB system would acquire (i.e. receive to the reserve bucket) if the bond were Chickened In now.
    *
    * For the bonder, _capAmount is their boostToken cap.
-   * For the CB system, _capAmount is the lpToken bond amount (less the Chicken In fee).
+   * For the CB system, _capAmount is the token bond amount (less the Chicken In fee).
    */
   function _calcAccruedAmount(
     uint256 _startTime,
@@ -404,13 +273,9 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     return accruedAmount;
   }
 
-  function _minutesPassedSinceLastRedemption() internal view returns (uint256) {
-    return (block.timestamp - lastRedemptionTime) / SECONDS_IN_ONE_MINUTE;
-  }
-
   function _withdraw(address _to, uint256 _amount) internal {
-    uint256 amountToWithdraw = Math.min(_amount, lpToken.balanceOf(address(this)));
-    lpToken.transfer(_to, amountToWithdraw);
+    uint256 amountToWithdraw = Math.min(_amount, token.balanceOf(address(this)));
+    token.transfer(_to, amountToWithdraw);
   }
 
   function _updateAccrualParameter() internal returns (uint256) {
@@ -509,28 +374,18 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   // --- 'require' functions
 
   function _requireNonZeroAmount(uint256 _amount) internal pure {
-    require(_amount != 0, 'CBM: Amount must be > 0');
-  }
-
-  function _requireRedemptionNotDepletingBoostToken(uint256 amountToRedeem) internal view {
-    if (!migration) {
-      require(amountToRedeem + MIN_BTOKEN_SUPPLY <= boostToken.totalSupply(), 'CBM: Cannot redeem below min supply');
-    }
+    require(_amount != 0, "CBM: Amount must be > 0");
   }
 
   function _requireCallerOwnsBond(uint256 _bondID) internal view {
-    require(msg.sender == bondNFT.ownerOf(_bondID), 'CBM: Caller must own the bond');
+    require(msg.sender == bondNFT.ownerOf(_bondID), "CBM: Caller must own the bond");
   }
 
   function _requireMinBond(uint256 _amount) internal view {
-    require(_amount >= MIN_BOND_AMOUNT, 'CBM: Bond minimum amount not reached');
-  }
-
-  function _requireMigrationNotActive() internal view {
-    require(!migration, 'CBM: Migration must be not be active');
+    require(_amount >= MIN_BOND_AMOUNT, "CBM: Bond minimum amount not reached");
   }
 
   function _requireActiveStatus(BondStatus status) internal pure {
-    require(status == BondStatus.active, 'CBM: Bond must be active');
+    require(status == BondStatus.active, "CBM: Bond must be active");
   }
 }
