@@ -11,8 +11,7 @@ interface IChickenBondManager {
     uint256 minimumAccrualParameter; // Stop adjusting `accrualParameter` when this value is reached
     uint256 accrualAdjustmentRate; // `accrualParameter` is multiplied `1 - accrualAdjustmentRate` every time there's an adjustment
     uint256 accrualAdjustmentPeriodSeconds; // The duration of an adjustment period in seconds
-    uint256 bootstrapPeriodChickenIn; // Min duration of first chicken-in
-    uint256 bootstrapPeriodRedeem; // Redemption lock period after first chicken in
+    uint256 bootstrapPeriod; // Min duration of first chicken-in
     uint256 minBondAmount; // Minimum amount of Token that needs to be bonded
   }
 
@@ -31,4 +30,15 @@ interface IChickenBondManager {
     chickenedOut,
     chickenedIn
   }
+
+  function getBondData(uint256 _bondID)
+    external
+    view
+    returns (
+      uint256 bondedAmount,
+      uint64 claimedBoostedToken,
+      uint64 startTime,
+      uint64 endTime,
+      uint8 status
+    );
 }

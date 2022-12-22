@@ -36,8 +36,7 @@ contract ChickenBondManagerTest is Test {
   uint256 minimumAccrualParameter = 1 days;
   uint256 accrualAdjustmentRate = 0.01 ether; // equeals to 1%
   uint256 accrualAdjustmentPeriodSeconds = 1 days;
-  uint256 bootstrapPeriodChickenIn = 2 hours;
-  uint256 bootstrapPeriodRedeem = 4 hours;
+  uint256 bootstrapPeriod = 2 hours;
   uint256 minBondAmount = 1 ether;
 
   function setUp() public {
@@ -55,8 +54,7 @@ contract ChickenBondManagerTest is Test {
       minimumAccrualParameter: minimumAccrualParameter,
       accrualAdjustmentRate: accrualAdjustmentRate, // equeals to 1%
       accrualAdjustmentPeriodSeconds: accrualAdjustmentPeriodSeconds,
-      bootstrapPeriodChickenIn: bootstrapPeriodChickenIn,
-      bootstrapPeriodRedeem: bootstrapPeriodRedeem,
+      bootstrapPeriod: bootstrapPeriod,
       minBondAmount: minBondAmount
     });
 

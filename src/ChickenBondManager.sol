@@ -6,22 +6,19 @@ import "./utils/ChickenMath.sol";
 import "./Interfaces/IBondNFT.sol";
 import "./Interfaces/IChickenBondManager.sol";
 import "./Interfaces/IChickenBondController.sol";
-import "./SimpleStrategy.sol";
 import "./BoostToken.sol";
 import "./Token.sol";
 
 contract ChickenBondManager is ChickenMath, IChickenBondManager {
-  Token public token;
-  IBondNFT public bondNFT;
-  BoostToken public boostToken;
-  IChickenBondController public controller;
+  Token public immutable token;
+  IBondNFT public immutable bondNFT;
+  BoostToken public immutable boostToken;
+  IChickenBondController public immutable controller;
 
   uint256 private pendingAmount;
   uint256 private reserveAmount;
 
-  uint256 public firstChickenInTime;
   uint256 public totalWeightedStartTimes;
-  uint256 public lastRedemptionTime;
   uint256 public countChickenIn;
   uint256 public countChickenOut;
 
@@ -31,8 +28,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
 
   // --- Constants ---
   uint256 constant MAX_UINT256 = type(uint256).max;
-  uint256 public immutable BOOTSTRAP_PERIOD_CHICKEN_IN;
-  uint256 public immutable BOOTSTRAP_PERIOD_REDEEM;
+  uint256 public immutable BOOTSTRAP_PERIOD;
   uint256 public immutable MIN_BOND_AMOUNT;
 
   // --- Accrual control variables ---
@@ -50,7 +46,6 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   uint256 public accrualAdjustmentPeriodCount;
 
   // --- Events ---
-  event LastRedemptionTimeUpdated(uint256 _lastRedemptionFeeOpTime);
   event BondCreated(address indexed bonder, uint256 bondId, uint256 amount);
   event BondClaimed(
     address indexed bonder,
@@ -79,8 +74,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     accrualAdjustmentMultiplier = 1e18 - params.accrualAdjustmentRate;
     accrualAdjustmentPeriodSeconds = params.accrualAdjustmentPeriodSeconds;
 
-    BOOTSTRAP_PERIOD_CHICKEN_IN = params.bootstrapPeriodChickenIn;
-    BOOTSTRAP_PERIOD_REDEEM = params.bootstrapPeriodRedeem;
+    BOOTSTRAP_PERIOD = params.bootstrapPeriod;
     require(params.minBondAmount != 0, "ChickenBondManager: MIN BOND AMOUNT parameter cannot be zero"); // We can still use 1e-18
     MIN_BOND_AMOUNT = params.minBondAmount;
   }
@@ -115,9 +109,10 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
   }
 
   function createBond(uint256 _amountToBond) public returns (uint256) {
-    _requireMinBond(_amountToBond);
+    require(_amountToBond >= MIN_BOND_AMOUNT, "CBM: Bond minimum amount not reached");
 
     _updateAccrualParameter();
+    _updateRatio();
 
     uint256 bondID = bondNFT.mint(msg.sender);
 
@@ -158,6 +153,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     _requireActiveStatus(bond.status);
 
     _updateAccrualParameter();
+    _updateRatio();
 
     idToBondData[_bondID].status = BondStatus.chickenedOut;
     idToBondData[_bondID].endTime = uint64(block.timestamp);
@@ -166,8 +162,6 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     pendingAmount -= bond.bondedAmount;
     totalWeightedStartTimes -= bond.bondedAmount * bond.startTime;
 
-    // adds fees generated to the reserve.
-    _updateRatio();
     _withdraw(msg.sender, bond.bondedAmount);
     emit BondCancelled(msg.sender, _bondID, bond.bondedAmount);
   }
@@ -180,16 +174,13 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     _requireCallerOwnsBond(_bondID);
     _requireActiveStatus(bond.status);
 
-    uint256 updatedAccrualParameter = _updateAccrualParameter();
+    require(
+      block.timestamp >= bond.startTime + BOOTSTRAP_PERIOD,
+      "ChickenBondManager: First chicken in must wait until bootstrap period is over"
+    );
 
-    /* Upon the first chicken-in after a) system deployment or b) redemption of the full boostToken supply, divert
-     * any earned fees converted to lp to the bTKN-TKN AMM for fairness.
-     *
-     * This is not done inExitMode since there is no need to send rewards to the staking contract.
-     */
-    if (boostToken.totalSupply() == 0 && !inExitMode) {
-      _firstChickenIn(bond.startTime);
-    }
+    uint256 updatedAccrualParameter = _updateAccrualParameter();
+    _updateRatio();
 
     uint256 accruedBoostToken = _calcAccruedAmount(bond.startTime, bond.bondedAmount, updatedAccrualParameter);
     idToBondData[_bondID].claimedBoostedToken = uint64(Math.min(accruedBoostToken / 1e18, type(uint64).max)); // to units and uint64
@@ -202,80 +193,57 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     totalWeightedStartTimes -= bond.bondedAmount * bond.startTime;
     boostToken.mint(msg.sender, accruedBoostToken);
     uint256 exitLiquidity = accruedBoostToken - bond.bondedAmount;
-    _updateRatio();
 
     emit BondClaimed(msg.sender, _bondID, bond.bondedAmount, accruedBoostToken, exitLiquidity);
   }
 
   function redeem(uint256 amount) external {
-    _requireNonZeroAmount(amount);
+    require(amount != 0, "CBM: Amount must be > 0");
 
-    require(
-      block.timestamp >= firstChickenInTime + BOOTSTRAP_PERIOD_REDEEM,
-      "ChickenBondManager: Redemption after first chicken in must wait until bootstrap period is over"
-    );
     require(boostToken.balanceOf(msg.sender) >= amount, "ChickenBondManager: You do not own enough boost tokens");
+
+    _updateRatio();
 
     reserveAmount -= amount;
     boostToken.burn(msg.sender, amount);
     _withdraw(msg.sender, amount);
 
-    _updateRatio();
-
     emit BoostTokenRedeemed(msg.sender, amount);
   }
 
-  function _firstChickenIn(uint256 _bondStartTime) internal {
-    //assert(!inExitMode); // we leave it as a comment so we can uncomment it for automated testing tools
+  function _requireCallerOwnsBond(uint256 _bondID) internal view {
+    require(msg.sender == bondNFT.ownerOf(_bondID), "CBM: Caller must own the bond");
+  }
 
-    require(
-      block.timestamp >= _bondStartTime + BOOTSTRAP_PERIOD_CHICKEN_IN,
-      "ChickenBondManager: First chicken in must wait until bootstrap period is over"
-    );
-    firstChickenInTime = block.timestamp;
-
-    _updateRatio();
+  function _requireActiveStatus(BondStatus status) internal pure {
+    require(status == BondStatus.active, "CBM: Bond must be active");
   }
 
   function _exitAmount() internal view returns (uint256) {
     return token.balanceOf(address(this)) - (pendingAmount + reserveAmount);
   }
 
+  function _withdraw(address _to, uint256 _amount) internal {
+    uint256 amountToWithdraw = Math.min(_amount, token.balanceOf(address(this)));
+    token.transfer(_to, amountToWithdraw);
+  }
+
   function _updateRatio() internal {
     controller.updateRatio(pendingAmount, reserveAmount, _exitAmount());
   }
 
-  /* _calcAccruedAmount: internal getter for calculating accrued token amount for a given bond.
-   *
-   * This function is unit-agnostic. It can be used to calculate a bonder's accrrued boostedToken, or the token that the
-   * CB system would acquire (i.e. receive to the reserve bucket) if the bond were Chickened In now.
-   *
-   * For the bonder, _capAmount is their boostToken cap.
-   * For the CB system, _capAmount is the token bond amount (less the Chicken In fee).
-   */
   function _calcAccruedAmount(
     uint256 _startTime,
     uint256 _capAmount,
     uint256 _accrualParameter
   ) internal view returns (uint256) {
-    // All bonds have a non-zero creation timestamp, so return accrued bTKN 0 if the startTime is 0
     if (_startTime == 0) {
       return 0;
     }
-
-    // Scale `bondDuration` up to an 18 digit fixed-point number.
-    // This lets us add it to `accrualParameter`, which is also an 18-digit FP.
     uint256 bondDuration = 1e18 * (block.timestamp - _startTime);
-
     uint256 accruedAmount = (_capAmount * bondDuration) / (bondDuration + _accrualParameter);
     //assert(accruedAmount < _capAmount); // we leave it as a comment so we can uncomment it for automated testing tools
-
     return accruedAmount;
-  }
-
-  function _withdraw(address _to, uint256 _amount) internal {
-    uint256 amountToWithdraw = Math.min(_amount, token.balanceOf(address(this)));
-    token.transfer(_to, amountToWithdraw);
   }
 
   function _updateAccrualParameter() internal returns (uint256) {
@@ -369,23 +337,5 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
       (_storedAccrualParameter * decPow(accrualAdjustmentMultiplier, numberOfAdjustments)) / 1e18,
       minimumAccrualParameter
     );
-  }
-
-  // --- 'require' functions
-
-  function _requireNonZeroAmount(uint256 _amount) internal pure {
-    require(_amount != 0, "CBM: Amount must be > 0");
-  }
-
-  function _requireCallerOwnsBond(uint256 _bondID) internal view {
-    require(msg.sender == bondNFT.ownerOf(_bondID), "CBM: Caller must own the bond");
-  }
-
-  function _requireMinBond(uint256 _amount) internal view {
-    require(_amount >= MIN_BOND_AMOUNT, "CBM: Bond minimum amount not reached");
-  }
-
-  function _requireActiveStatus(BondStatus status) internal pure {
-    require(status == BondStatus.active, "CBM: Bond must be active");
   }
 }
