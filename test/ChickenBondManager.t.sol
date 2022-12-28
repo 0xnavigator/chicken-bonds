@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import "../src/Token.sol";
 import "../src/BondNFT.sol";
-import "../src/BoostToken.sol";
+import "../src/BondToken.sol";
 import "../src/SimpleStrategy.sol";
 
 import "../src/ChickenBondController.sol";
@@ -24,7 +24,7 @@ contract ChickenBondManagerTest is Test {
   ChickenBondManager cb;
   Token token;
   BondNFT bondNFT;
-  BoostToken boostToken;
+  BondToken bondToken;
   ChickenBondController controller;
 
   SimpleStrategy strategy;
@@ -37,7 +37,7 @@ contract ChickenBondManagerTest is Test {
   uint256 accrualAdjustmentRate = 0.01 ether; // equeals to 1%
   uint256 accrualAdjustmentPeriodSeconds = 1 days;
   uint256 bootstrapPeriod = 2 hours;
-  uint256 minBondAmount = 1 ether;
+  uint256 minLockAmount = 1 ether;
 
   function setUp() public {
     bondNFT = new BondNFT("BondNFT", "BNFT", 0);
@@ -55,11 +55,11 @@ contract ChickenBondManagerTest is Test {
       accrualAdjustmentRate: accrualAdjustmentRate, // equeals to 1%
       accrualAdjustmentPeriodSeconds: accrualAdjustmentPeriodSeconds,
       bootstrapPeriod: bootstrapPeriod,
-      minBondAmount: minBondAmount
+      minLockAmount: minLockAmount
     });
 
     cb = new ChickenBondManager(params);
-    boostToken = cb.boostToken();
+    bondToken = cb.bondToken();
     bondNFT.setChickenBondManager(address(cb));
     deployTime = block.timestamp;
   }
@@ -117,7 +117,7 @@ contract ChickenBondManagerTest is Test {
 
   //   skip(initialAccrualParameter);
 
-  //   uint256 btokenAccrued = cb.calcAccruedBoostToken(bondId);
+  //   uint256 btokenAccrued = cb.calcAccruedbondToken(bondId);
   //   uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18);
   //   uint256 feeDiscountedAmount = amount - chickenInfee;
   //   uint256 expectedAccruedAmount = feeDiscountedAmount / 2;
@@ -150,7 +150,7 @@ contract ChickenBondManagerTest is Test {
   //     cb.chickenIn(bond);
   //   }
 
-  //   uint256 cacheBoostTokenBalance = boostToken.balanceOf(address(this));
+  //   uint256 cachebondTokenBalance = bondToken.balanceOf(address(this));
   //   uint256 cacheAmmRewards = cb.ammStakingRewards();
 
   //   {
@@ -165,17 +165,17 @@ contract ChickenBondManagerTest is Test {
   //   uint256 bondId = createBond(amount);
   //   skip(initialAccrualParameter);
   //   uint256 accruedFees = strategy.fees();
-  //   uint256 accruedBoostTokens = cb.calcAccruedBoostToken(bondId);
+  //   uint256 accruedbondTokens = cb.calcAccruedbondToken(bondId);
   //   cb.chickenIn(bondId);
 
   //   uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18); // Rewards to AMM
   //   uint256 expectedBoostedAccruedAmount = (((amount - chickenInfee) / 2) * 1e18) / cb.calcSystemBackingRatio();
 
   //   assertTrue(
-  //     boostToken.balanceOf(address(this)) == accruedBoostTokens + cacheBoostTokenBalance,
+  //     bondToken.balanceOf(address(this)) == accruedbondTokens + cachebondTokenBalance,
   //     "Boost token balance check"
   //   );
-  //   assertTrue(accruedBoostTokens == expectedBoostedAccruedAmount, "Calculation of accrued boosted tokens");
+  //   assertTrue(accruedbondTokens == expectedBoostedAccruedAmount, "Calculation of accrued boosted tokens");
 
   //   checkTreasury(
   //     0,
@@ -204,8 +204,8 @@ contract ChickenBondManagerTest is Test {
   //   uint256 accruedFees = strategy.fees();
   //   uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18); // Rewards to AMM
   //   uint256 expectedAccruedAmount = (amount - chickenInfee) / 2;
-  //   cb.redeem(boostToken.balanceOf(address(this)));
-  //   assertTrue(boostToken.balanceOf(address(this)) == 0, "boostToken balance check");
+  //   cb.redeem(bondToken.balanceOf(address(this)));
+  //   assertTrue(bondToken.balanceOf(address(this)) == 0, "bondToken balance check");
   //   assertTrue(token.balanceOf(address(this)) == expectedAccruedAmount + accruedFees, "LP balance check");
   //   checkTreasury(0, 0, expectedAccruedAmount);
   // }

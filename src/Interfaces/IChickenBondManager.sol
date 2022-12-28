@@ -12,12 +12,12 @@ interface IChickenBondManager {
     uint256 accrualAdjustmentRate; // `accrualParameter` is multiplied `1 - accrualAdjustmentRate` every time there's an adjustment
     uint256 accrualAdjustmentPeriodSeconds; // The duration of an adjustment period in seconds
     uint256 bootstrapPeriod; // Min duration of first chicken-in
-    uint256 minBondAmount; // Minimum amount of Token that needs to be bonded
+    uint256 minLockAmount; // Minimum amount of Token that needs to be bonded
   }
 
   struct BondData {
-    uint256 bondedAmount;
-    uint64 claimedBoostedToken; // In unit amount without decimals
+    uint256 lockedAmount;
+    uint256 claimedBondToken;
     uint64 startTime;
     uint64 endTime; // Timestamp of chicken in/out event
     BondStatus status;
@@ -35,8 +35,8 @@ interface IChickenBondManager {
     external
     view
     returns (
-      uint256 bondedAmount,
-      uint64 claimedBoostedToken,
+      uint256 lockedAmount,
+      uint256 claimedBondToken,
       uint64 startTime,
       uint64 endTime,
       uint8 status

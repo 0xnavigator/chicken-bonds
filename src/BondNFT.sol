@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.10;
 
-import '@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol';
-import '@openzeppelin/contracts/token/ERC20/IERC20.sol';
-import '@openzeppelin/contracts/access/Ownable.sol';
-import '@openzeppelin/contracts/utils/math/Math.sol';
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-import './Interfaces/IChickenBondManager.sol';
+import "./Interfaces/IChickenBondManager.sol";
 
 //import "forge-std/console.sol";
 
@@ -15,7 +14,7 @@ contract BondNFT is ERC721Enumerable, Ownable {
   uint256 public immutable transferLockoutPeriodSeconds;
 
   modifier onlyBondsManager() {
-    require(msg.sender == address(chickenBondManager), 'BondNFT: Caller must be ChickenBondManager');
+    require(msg.sender == address(chickenBondManager), "BondNFT: Caller must be ChickenBondManager");
     _;
   }
 
@@ -28,8 +27,8 @@ contract BondNFT is ERC721Enumerable, Ownable {
   }
 
   function setChickenBondManager(address _chickenBondManager) external onlyOwner {
-    require(_chickenBondManager != address(0), 'BondNFT: _chickenBondManagerAddress must be non-zero');
-    require(address(chickenBondManager) == address(0), 'BondNFT: setAddresses() can only be called once');
+    require(_chickenBondManager != address(0), "BondNFT: _chickenBondManagerAddress must be non-zero");
+    require(address(chickenBondManager) == address(0), "BondNFT: setAddresses() can only be called once");
 
     chickenBondManager = IChickenBondManager(_chickenBondManager);
     renounceOwnership();
@@ -43,9 +42,9 @@ contract BondNFT is ERC721Enumerable, Ownable {
   }
 
   function tokenURI(uint256 _tokenID) public view virtual override returns (string memory) {
-    require(_exists(_tokenID), 'BondNFT: URI query for nonexistent token');
+    require(_exists(_tokenID), "BondNFT: URI query for nonexistent token");
 
-    return ('uri');
+    return ("uri");
   }
 
   // Prevent transfers for a period of time after chickening in or out
@@ -60,7 +59,7 @@ contract BondNFT is ERC721Enumerable, Ownable {
       require(
         status == uint8(IChickenBondManager.BondStatus.active) ||
           block.timestamp >= endTime + transferLockoutPeriodSeconds,
-        'BondNFT: cannot transfer during lockout period'
+        "BondNFT: cannot transfer during lockout period"
       );
     }
 
