@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import "../src/Token.sol";
 import "../src/BondNFT.sol";
-import "../src/BondToken.sol";
+import "../src/BoostToken.sol";
 import "../src/SimpleStrategy.sol";
 
+import "../src/utils/BaseMath.sol";
 import "../src/ChickenBondController.sol";
 import "../src/ChickenBondManager.sol";
 import "../src/Interfaces/IChickenBondManager.sol";
 
 import "forge-std/Test.sol";
 
-contract ChickenBondManagerTest is Test {
+contract ChickenBondManagerTest is Test, BaseMath {
   struct Treasury {
     uint256 pending;
     uint256 reserve;
@@ -24,20 +26,20 @@ contract ChickenBondManagerTest is Test {
   ChickenBondManager cb;
   Token token;
   BondNFT bondNFT;
-  BondToken bondToken;
+  BoostToken boostToken;
   ChickenBondController controller;
 
   SimpleStrategy strategy;
   uint256 deployTime;
 
   // ChickenBond Parameters
-  uint256 targetAverageAgeSeconds = 15 days;
-  uint256 initialAccrualParameter = 4 days;
-  uint256 minimumAccrualParameter = 1 days;
+  uint256 targetAverageAgeSeconds = 1 days;
+  uint256 initialAccrualParameter = 4217 seconds;
+  uint256 minimumAccrualParameter = 0.1 days;
   uint256 accrualAdjustmentRate = 0.01 ether; // equeals to 1%
   uint256 accrualAdjustmentPeriodSeconds = 1 days;
-  uint256 bootstrapPeriod = 2 hours;
-  uint256 minLockAmount = 1 ether;
+  uint256 bootstrapPeriod = 1 hours;
+  uint256 minBondAmount = 1 ether;
 
   function setUp() public {
     bondNFT = new BondNFT("BondNFT", "BNFT", 0);
@@ -55,145 +57,112 @@ contract ChickenBondManagerTest is Test {
       accrualAdjustmentRate: accrualAdjustmentRate, // equeals to 1%
       accrualAdjustmentPeriodSeconds: accrualAdjustmentPeriodSeconds,
       bootstrapPeriod: bootstrapPeriod,
-      minLockAmount: minLockAmount
+      minBondAmount: minBondAmount
     });
 
     cb = new ChickenBondManager(params);
-    bondToken = cb.bondToken();
+    boostToken = cb.boostToken();
     bondNFT.setChickenBondManager(address(cb));
     deployTime = block.timestamp;
   }
 
-  // function testCompoundFees() public {
-  //   skip(1 days);
-  //   uint256 fees = ((block.timestamp - deployTime) / 1 days) * rangePoolProxy.strategy().FEE_MULTIPLIER();
-  //   rangePoolProxy.compound();
-  //   assertTrue(fees == token.balanceOf(address(cb)));
-  // }
+  function testDeployment() public {
+    assertTrue(address(cb.token()) == address(token), "Token address check");
+    assertTrue(address(cb.boostToken()) == address(boostToken), "Bond Token address check");
+    assertTrue(address(cb.bondNFT()) == address(bondNFT), "NFT address check");
+  }
 
-  // function testRangePoolProxy() public {
-  //   uint256 amount = 10 ether;
-  //   deposit(amount);
-  //   uint256 currentBalance = token.balanceOf(address(this));
-  //   assertTrue(amount == currentBalance, "balance match");
-  //   withdraw(amount);
-  //   assertTrue(token.balanceOf(address(this)) == currentBalance - amount, "balance match");
-  // }
+  function testLockToken() public {
+    uint256 amount = 1 ether;
+    uint256 bondId = createBond(amount);
+    assertTrue(token.balanceOf(address(cb)) == amount, "Token balance check");
+    checkBondData(bondId, amount, 0, uint64(block.timestamp), 0, uint8(IChickenBondManager.BondStatus.active));
+    checkTreasury(amount, 0, 0);
+  }
 
-  // function testCreateBond() public {
-  //   uint256 amount = 10 ether;
-  //   uint256 bondId = createBond(amount);
-  //   assertTrue(token.balanceOf(address(cb)) == amount, "LP balance check");
-  //   checkBondData(bondId, amount, 0, uint64(block.timestamp), 0, uint8(IChickenBondManager.BondStatus.active));
-  //   checkTreasury(amount, 0, 0);
-  // }
+  function testLockBootstrapRevert() public {
+    uint256 amount = 1 ether;
+    mintAndApprove(amount);
+    vm.expectRevert(bytes("ChickenBondManager: Must wait until bootstrap period is over"));
+    cb.createBond(amount);
+  }
 
-  // function testChickenOut() public {
-  //   uint256 amount = 10 ether;
-  //   uint256 bondId = createBond(amount);
-  //   uint256 startTime = block.timestamp;
-  //   uint256 timeSkip = 1 days;
-  //   skip(timeSkip);
+  function testLockMinimumAmountRevert() public {
+    uint256 amount = 0.9 ether;
+    mintAndApprove(amount);
+    skip(bootstrapPeriod);
+    vm.expectRevert(bytes("ChickenBondManager: Minimum bond amount not reached"));
+    cb.createBond(amount);
+  }
 
-  //   cb.chickenOut(bondId);
+  function testAccrualCurve() public {
+    uint256 amount = 1 ether;
+    uint256 bondId = createBond(amount);
+    skip(initialAccrualParameter);
+    assertTrue(cb.calcAccruedAmount(bondId) == amount / 2);
+  }
 
-  //   assertTrue(token.balanceOf(address(this)) == amount, "LP balance check");
-  //   checkTreasury(0, 0, 0);
-  //   checkBondData(
-  //     bondId,
-  //     amount,
-  //     0,
-  //     uint64(startTime),
-  //     uint64(startTime + timeSkip),
-  //     uint8(IChickenBondManager.BondStatus.chickenedOut)
-  //   );
-  //   checkStakingRewards(0);
-  // }
+  function testBreakevenTimeUpper() public {
+    uint256 premium = 1.1 ether;
+    uint256 amount = 1 ether;
+    uint256 bondId = createBond(amount);
+    uint256 redeemTime = (initialAccrualParameter * DECIMAL_PRECISION) / (premium - 1 ether);
+    skip(redeemTime + 1);
+    assertTrue((cb.calcAccruedAmount(bondId) * premium) / DECIMAL_PRECISION > 1 ether);
+  }
 
-  // function testFirstChickenIn() public {
-  //   uint256 amount = 10 ether;
-  //   uint256 bondId = createBond(amount);
-  //   uint256 startTime = block.timestamp;
+  function testBreakevenTimeLower() public {
+    uint256 premium = 1.1 ether;
+    uint256 amount = 1 ether;
+    uint256 bondId = createBond(amount);
+    uint256 redeemTime = (initialAccrualParameter * DECIMAL_PRECISION) / (premium - 1 ether);
+    skip(redeemTime);
+    assertTrue((cb.calcAccruedAmount(bondId) * premium) / DECIMAL_PRECISION < 1 ether);
+  }
 
-  //   skip(initialAccrualParameter);
+  function testChickenOut() public {
+    uint256 amount = 1 ether;
+    uint256 bondId = createBond(amount);
+    uint256 startTime = block.timestamp;
+    uint256 timeSkip = 1 days;
+    skip(timeSkip);
 
-  //   uint256 btokenAccrued = cb.calcAccruedbondToken(bondId);
-  //   uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18);
-  //   uint256 feeDiscountedAmount = amount - chickenInfee;
-  //   uint256 expectedAccruedAmount = feeDiscountedAmount / 2;
+    cb.chickenOut(bondId);
 
-  //   assertTrue(btokenAccrued == expectedAccruedAmount, "token half life");
+    assertTrue(token.balanceOf(address(this)) == amount, "Token balance check");
+    checkTreasury(0, 0, 0);
+    checkBondData(
+      bondId,
+      amount,
+      0,
+      uint64(startTime),
+      uint64(startTime + timeSkip),
+      uint8(IChickenBondManager.BondStatus.chickenedOut)
+    );
+  }
 
-  //   cb.chickenIn(bondId);
+  function testChickenIn() public {
+    uint256 amount = 1 ether;
+    uint256 bondId = createBond(amount);
+    uint256 startTime = block.timestamp;
+    uint256 timeSkip = initialAccrualParameter;
+    skip(timeSkip);
 
-  //   checkTreasury(0, expectedAccruedAmount, amount - expectedAccruedAmount - chickenInfee);
-  //   checkBondData(
-  //     bondId,
-  //     amount,
-  //     uint64(btokenAccrued / 1e18),
-  //     uint64(startTime),
-  //     uint64(startTime + initialAccrualParameter),
-  //     uint8(IChickenBondManager.BondStatus.chickenedIn)
-  //   );
-  //   checkStakingRewards(chickenInfee + strategy.cumulativeFees());
-  // }
+    cb.chickenIn(bondId);
 
-  // function testSecondChickenIn() public {
-  //   uint256 amount = 10 ether;
-  //   Treasury memory cacheTreasury;
-  //   IChickenBondManager.BondData memory bondData;
-
-  //   // First Bond
-  //   {
-  //     uint256 bond = createBond(amount);
-  //     skip(1 days);
-  //     cb.chickenIn(bond);
-  //   }
-
-  //   uint256 cachebondTokenBalance = bondToken.balanceOf(address(this));
-  //   uint256 cacheAmmRewards = cb.ammStakingRewards();
-
-  //   {
-  //     (uint256 cachePending, uint256 cacheReserve, uint256 cacheExit) = cb.getTreasury();
-  //     cacheTreasury.pending = cachePending;
-  //     cacheTreasury.reserve = cacheReserve;
-  //     cacheTreasury.exit = cacheExit;
-  //   }
-
-  //   // Second Bond
-  //   bondData.startTime = uint64(block.timestamp);
-  //   uint256 bondId = createBond(amount);
-  //   skip(initialAccrualParameter);
-  //   uint256 accruedFees = strategy.fees();
-  //   uint256 accruedbondTokens = cb.calcAccruedbondToken(bondId);
-  //   cb.chickenIn(bondId);
-
-  //   uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18); // Rewards to AMM
-  //   uint256 expectedBoostedAccruedAmount = (((amount - chickenInfee) / 2) * 1e18) / cb.calcSystemBackingRatio();
-
-  //   assertTrue(
-  //     bondToken.balanceOf(address(this)) == accruedbondTokens + cachebondTokenBalance,
-  //     "Boost token balance check"
-  //   );
-  //   assertTrue(accruedbondTokens == expectedBoostedAccruedAmount, "Calculation of accrued boosted tokens");
-
-  //   checkTreasury(
-  //     0,
-  //     (((amount - chickenInfee) / 2) + accruedFees + cacheTreasury.reserve),
-  //     ((amount - chickenInfee) / 2) + cacheTreasury.exit
-  //   );
-
-  //   checkBondData(
-  //     bondId,
-  //     amount,
-  //     uint64(expectedBoostedAccruedAmount / 1e18),
-  //     uint64(bondData.startTime),
-  //     uint64(bondData.startTime + initialAccrualParameter),
-  //     uint8(IChickenBondManager.BondStatus.chickenedIn)
-  //   );
-
-  //   checkStakingRewards(cacheAmmRewards + chickenInfee);
-  // }
+    assertTrue(token.balanceOf(address(this)) == 0, "Token balance check");
+    assertTrue(token.balanceOf(address(cb)) == amount, "Bond token cb balance check");
+    assertTrue(boostToken.balanceOf(address(this)) == amount / 2, "Bond token this balance check");
+    checkTreasury(0, amount / 2, amount / 2);
+    checkBondData(
+      bondId,
+      amount,
+      amount / 2,
+      uint64(startTime),
+      uint64(startTime + timeSkip),
+      uint8(IChickenBondManager.BondStatus.chickenedIn)
+    );
+  }
 
   // function testRedeem() public {
   //   uint256 amount = 10 ether;
@@ -204,59 +173,48 @@ contract ChickenBondManagerTest is Test {
   //   uint256 accruedFees = strategy.fees();
   //   uint256 chickenInfee = ((chickenInAMMFee * amount) / 1e18); // Rewards to AMM
   //   uint256 expectedAccruedAmount = (amount - chickenInfee) / 2;
-  //   cb.redeem(bondToken.balanceOf(address(this)));
-  //   assertTrue(bondToken.balanceOf(address(this)) == 0, "bondToken balance check");
+  //   cb.redeem(boostToken.balanceOf(address(this)));
+  //   assertTrue(boostToken.balanceOf(address(this)) == 0, "boostToken balance check");
   //   assertTrue(token.balanceOf(address(this)) == expectedAccruedAmount + accruedFees, "LP balance check");
   //   checkTreasury(0, 0, expectedAccruedAmount);
   // }
 
-  // function approve() public {
-  //   token.approve(address(cb), type(uint256).max);
-  // }
+  function mintAndApprove(uint256 amount) internal {
+    token.mint(address(this), amount);
+    token.approve(address(cb), amount);
+  }
 
-  // function deposit(uint256 amount) public {
-  //   rangePoolProxy.deposit(amount);
-  // }
+  function createBond(uint256 amount) internal returns (uint256 bondId) {
+    mintAndApprove(amount);
+    skip(bootstrapPeriod);
+    bondId = cb.createBond(amount);
+  }
 
-  // function withdraw(uint256 amount) public {
-  //   rangePoolProxy.withdraw(address(this), amount);
-  // }
+  function checkTreasury(
+    uint256 pending,
+    uint256 reserve,
+    uint256 exit
+  ) internal {
+    (uint256 _pending, uint256 _reserve, uint256 _exit) = cb.getTreasury();
+    assertTrue(pending == _pending, "Pending bucket check");
+    assertTrue(reserve == _reserve, "Reserve bucket check");
+    assertTrue(exit == _exit, "Exit bucket check");
+  }
 
-  // function createBond(uint256 amount) public returns (uint256 bondId) {
-  //   deposit(amount);
-  //   approve();
-  //   bondId = cb.createBond(amount);
-  // }
-
-  // function checkTreasury(
-  //   uint256 pending,
-  //   uint256 reserve,
-  //   uint256 exit
-  // ) public {
-  //   (uint256 _pending, uint256 _reserve, uint256 _exit) = cb.getTreasury();
-  //   assertTrue(pending == _pending, "Pending bucket check");
-  //   assertTrue(reserve == _reserve, "Reserve bucket check");
-  //   assertTrue(exit == _exit, "Exit bucket check");
-  // }
-
-  // function checkBondData(
-  //   uint256 bondId,
-  //   uint256 bondedAmount,
-  //   uint64 claimedBoostedToken,
-  //   uint64 startTime,
-  //   uint64 endTime,
-  //   uint8 status
-  // ) public {
-  //   (uint256 _tokenAmount, uint64 _claimedBoostedToken, uint64 _startTime, uint64 _endTime, uint8 _status) = cb
-  //     .getBondData(bondId);
-  //   assertTrue(_tokenAmount == bondedAmount, "Check bondedAmount");
-  //   assertTrue(_claimedBoostedToken == claimedBoostedToken, "Check claimedBoostedToken");
-  //   assertTrue(_startTime == startTime, "Check startTime");
-  //   assertTrue(_endTime == endTime, "Check endTime");
-  //   assertTrue(_status == status, "Check status");
-  // }
-
-  // function checkStakingRewards(uint256 _stakingRewards) public {
-  //   assertTrue(cb.ammStakingRewards() == _stakingRewards, "Staking rewards check");
-  // }
+  function checkBondData(
+    uint256 bondId,
+    uint256 bondAmount,
+    uint256 claimedBoostAmount,
+    uint64 startTime,
+    uint64 endTime,
+    uint8 status
+  ) internal {
+    (uint256 _lockedAmount, uint256 _claimedBondToken, uint64 _startTime, uint64 _endTime, uint8 _status) = cb
+      .getBondData(bondId);
+    assertTrue(_lockedAmount == bondAmount, "Check locekd amount");
+    assertTrue(_claimedBondToken == claimedBoostAmount, "Check claimed createBond tokens");
+    assertTrue(_startTime == startTime, "Check startTime");
+    assertTrue(_endTime == endTime, "Check endTime");
+    assertTrue(_status == status, "Check status");
+  }
 }

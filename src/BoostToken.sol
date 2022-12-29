@@ -5,11 +5,11 @@ import "./Token.sol";
 
 //import "forge-std/console.sol";
 
-contract BondToken is Token {
+contract BoostToken is Token {
   constructor(address token)
     Token(
-      string(abi.encodePacked("BOND_", ERC20(token).name())),
-      string(abi.encodePacked("BOND_", ERC20(token).symbol()))
+      string(abi.encodePacked("Boost_", ERC20(token).name())),
+      string(abi.encodePacked("BOOST_", ERC20(token).symbol()))
     )
   {}
 

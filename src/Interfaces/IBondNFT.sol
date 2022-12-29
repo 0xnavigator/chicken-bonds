@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.10;
 
-import '@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol';
-import './IChickenBondManager.sol';
+import "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
+import "./IChickenBondManager.sol";
 
 interface IBondNFT is IERC721Enumerable {
   function mint(address _bonder) external returns (uint256);
@@ -14,10 +14,6 @@ interface IBondNFT is IERC721Enumerable {
   function getBondStartTime(uint256 _tokenID) external view returns (uint256 startTime);
 
   function getBondEndTime(uint256 _tokenID) external view returns (uint256 endTime);
-
-  function getBondInitialHalfDna(uint256 _tokenID) external view returns (uint80 initialHalfDna);
-
-  function getBondInitialDna(uint256 _tokenID) external view returns (uint256 initialDna);
 
   function getBondStatus(uint256 _tokenID) external view returns (uint8 status);
 }
