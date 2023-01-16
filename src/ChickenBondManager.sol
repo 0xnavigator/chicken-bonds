@@ -10,9 +10,11 @@ import "./Interfaces/IChickenBondManager.sol";
 import "./Interfaces/IChickenBondController.sol";
 import "./BoostToken.sol";
 import "./Token.sol";
+import "./Exit.sol";
 
 contract ChickenBondManager is ChickenMath, IChickenBondManager {
   Token public immutable token;
+  Exit public immutable exitToken;
   IBondNFT public immutable bondNFT;
   BoostToken public immutable boostToken;
   IChickenBondController public immutable controller;
@@ -30,6 +32,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
 
   // --- Constants ---
   uint256 constant MAX_UINT256 = type(uint256).max;
+  uint256 public immutable LP_PER_USD;
   uint256 public immutable BOOTSTRAP_PERIOD;
   uint256 public immutable MIN_BOND_AMOUNT;
 
@@ -56,7 +59,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     uint256 boostTokenClaimed,
     uint256 exitLiquidityAmount
   );
-
+  event ExitMinted(address indexed recipient, uint256 amount);
   event BondCancelled(address indexed bonder, uint256 bondId, uint256 amountReturned);
   event TokenRedeemed(address indexed redeemer, uint256 amount);
   event AccrualParameterUpdated(uint256 accrualParameter);
@@ -66,6 +69,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     token = Token(params.token);
     controller = IChickenBondController(params.controller);
     boostToken = new BoostToken(address(token));
+    exitToken = new Exit("Exit", "EXT", params.exitMaxSupply);
 
     deploymentTimestamp = block.timestamp;
     targetAverageAgeSeconds = params.targetAverageAgeSeconds;
@@ -79,6 +83,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     BOOTSTRAP_PERIOD = params.bootstrapPeriod;
     require(params.minBondAmount != 0, "ChickenBondManager: MIN BOND AMOUNT parameter cannot be zero"); // We can still use 1e-18
     MIN_BOND_AMOUNT = params.minBondAmount;
+    LP_PER_USD = params.lpPerUSD;
   }
 
   function getBondData(uint256 bondID)
@@ -211,6 +216,7 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
 
     // assert(bond.bondAmount > accruedbondToken); // Uncomment for tests.
     uint256 exitLiquidity = bond.bondAmount - accruedbondToken;
+    _mintExit(msg.sender, (exitLiquidity * DECIMAL_PRECISION) / LP_PER_USD);
 
     emit BondClaimed(msg.sender, bondID, bond.bondAmount, accruedbondToken, exitLiquidity);
   }
@@ -227,6 +233,14 @@ contract ChickenBondManager is ChickenMath, IChickenBondManager {
     _withdraw(msg.sender, amount);
 
     emit TokenRedeemed(msg.sender, amount);
+  }
+
+  function _mintExit(address recipient, uint256 amount) internal {
+    uint256 newSupply = exitToken.totalSupply() + amount;
+    uint256 mintAmount = newSupply > exitToken.MAX_SUPPLY() ? exitToken.MAX_SUPPLY() - amount : amount;
+    if (mintAmount != 0) exitToken.mint(recipient, mintAmount);
+
+    emit ExitMinted(recipient, mintAmount);
   }
 
   function _requireCallerOwnsBond(uint256 _bondID) internal view {

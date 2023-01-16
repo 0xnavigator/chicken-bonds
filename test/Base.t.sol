@@ -39,7 +39,9 @@ contract BaseTest is Test, ChickenMath {
   uint256 accrualAdjustmentRate = 0.01 ether; // equeals to 1%
   uint256 accrualAdjustmentPeriodSeconds = 1 days;
   uint256 bootstrapPeriod = 1 hours;
-  uint256 minBondAmount = 1 ether;
+  uint256 lpPerUSD = vm.envUint("LP_PER_USD") * 1 ether;
+  uint256 exitMaxSupply = vm.envUint("EXIT_MAX_SUPPLY") * 1 ether;
+  uint256 minBondAmount = lpPerUSD;
 
   function setUp() public virtual {
     bondNFT = new BondNFT("BondNFT", "BNFT", 0);
@@ -57,7 +59,9 @@ contract BaseTest is Test, ChickenMath {
       accrualAdjustmentRate: accrualAdjustmentRate, // equeals to 1%
       accrualAdjustmentPeriodSeconds: accrualAdjustmentPeriodSeconds,
       bootstrapPeriod: bootstrapPeriod,
-      minBondAmount: minBondAmount
+      minBondAmount: minBondAmount,
+      lpPerUSD: lpPerUSD,
+      exitMaxSupply: exitMaxSupply
     });
 
     cb = new ChickenBondManager(params);

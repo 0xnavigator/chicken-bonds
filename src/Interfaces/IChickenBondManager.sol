@@ -13,6 +13,8 @@ interface IChickenBondManager {
     uint256 accrualAdjustmentPeriodSeconds; // The duration of an adjustment period in seconds
     uint256 bootstrapPeriod; // Min duration of first chicken-in
     uint256 minBondAmount; // Minimum amount of Token that needs to be bonded
+    uint256 lpPerUSD; // Amount of LP per USD that is minted on the 500 - 10000 Range Pool
+    uint256 exitMaxSupply;
   }
 
   struct BondData {

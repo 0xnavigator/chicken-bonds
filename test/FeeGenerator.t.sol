@@ -18,4 +18,14 @@ contract FeeGeneratorTest is BaseTest {
 
     assert(fg.cumulativeFees() == timeSkip * DECIMAL_PRECISION);
   }
+
+  function testClaimsAndUnclaimedFees() public {
+    uint256 timeSkip = 100;
+    skip(timeSkip);
+    fg.claim();
+    skip(timeSkip);
+
+    assert(fg.unclaimedFees() == timeSkip * DECIMAL_PRECISION);
+    assert(fg.cumulativeFees() == timeSkip * DECIMAL_PRECISION);
+  }
 }

@@ -26,7 +26,7 @@ contract ChickenBondManagerTest is BaseTest {
   }
 
   function testLockMinimumAmountRevert() public {
-    uint256 amount = 0.9 ether;
+    uint256 amount = minBondAmount - 1;
     mintAndApprove(amount);
     skip(bootstrapPeriod);
     vm.expectRevert(bytes("ChickenBondManager: Minimum bond amount not reached"));
@@ -100,6 +100,7 @@ contract ChickenBondManagerTest is BaseTest {
       uint64(startTime + timeSkip),
       uint8(IChickenBondManager.BondStatus.chickenedIn)
     );
+    assertTrue(cb.exitToken().balanceOf(address(this)) == amount / 2);
   }
 
   function testRedeem() public {
