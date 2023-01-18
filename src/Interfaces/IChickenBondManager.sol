@@ -43,4 +43,13 @@ interface IChickenBondManager {
       uint64 endTime,
       uint8 status
     );
+
+  function getTreasury()
+    external
+    view
+    returns (
+      uint256 pending,
+      uint256 reserve,
+      uint256 exi
+    );
 }

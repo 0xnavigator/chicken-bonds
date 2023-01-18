@@ -2,8 +2,8 @@
 pragma solidity ^0.8.10;
 
 contract FeeGenerator {
-  uint256 lastTimeStamp;
   uint256 public constant FEE_MULTIPLIER = 1e18;
+  uint256 public lastTimeStamp;
   uint256 public cumulativeFees;
 
   constructor() {

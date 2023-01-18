@@ -2,9 +2,8 @@
 pragma solidity ^0.8.10;
 
 import "./Interfaces/IChickenBondController.sol";
-import "./FeeGenerator.sol";
 
-contract ChickenBondController is FeeGenerator {
+contract ChickenBondController {
   struct AccumulatedFees {
     uint256 accPending;
     uint256 accPendingDebt;
@@ -22,19 +21,9 @@ contract ChickenBondController is FeeGenerator {
     uint256 pending,
     uint256 reserve,
     uint256 exit
-  ) external {
-    af.accPending += pending * unclaimedFees() - af.accPendingDebt;
-    af.accReserve += reserve * unclaimedFees() - af.accReserveDebt;
-    af.accExit += exit * unclaimedFees() - af.accExitDebt;
-  }
+  ) external {}
 
-  function distributeFees() external returns (uint256) {
-    uint256 fee = _claim();
-    af.accPendingDebt += af.accPending;
-    af.accReserveDebt += af.accReserve;
-    af.accExitDebt += af.accExit;
-    return fee;
-  }
+  function distributeFees() external returns (uint256) {}
 
   function exitCheck() external view returns (bool) {}
 }

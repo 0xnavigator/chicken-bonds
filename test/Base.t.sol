@@ -7,10 +7,10 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "../src/Token.sol";
 import "../src/BondNFT.sol";
 import "../src/BoostToken.sol";
-import "../src/FeeGenerator.sol";
+import "../src/mock/FeeGenerator.sol";
 
 import "../src/utils/ChickenMath.sol";
-import "../src/ChickenBondController.sol";
+import "../src/mock/ChickenBondController.sol";
 import "../src/ChickenBondManager.sol";
 import "../src/Interfaces/IChickenBondManager.sol";
 
