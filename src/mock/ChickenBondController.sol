@@ -13,10 +13,11 @@ contract ChickenBondController is FeeGenerator {
     uint256 accPendingDebt;
     uint256 accReserveDebt;
     uint256 accExitDebt;
+    uint256 accountedFees;
   }
 
-  uint256 accountedFees;
-  AccumulatedFees public af;
+  AccumulatedFees public af0;
+  AccumulatedFees public af1;
 
   constructor() {}
 
@@ -25,9 +26,21 @@ contract ChickenBondController is FeeGenerator {
     uint256 reserve,
     uint256 exit
   ) external {
-    if (unclaimedFees() == accountedFees) return;
+    (uint unclaimedFees0, uint unclaimedFees1) = unclaimedFees();
+    _updateRatio(pending, reserve, exit, unclaimedFees0, af0);
+    _updateRatio(pending, reserve, exit, unclaimedFees1, af1);
+  }
 
-    uint256 fees = unclaimedFees() - accountedFees;
+  function _updateRatio(
+    uint256 pending,
+    uint256 reserve,
+    uint256 exit,
+    uint256 unclaimedFees,
+    AccumulatedFees storage af
+  ) internal {
+    if (unclaimedFees == af.accountedFees) return;
+
+    uint256 fees = unclaimedFees - af.accountedFees;
 
     uint256 total = pending + reserve + exit;
 
@@ -37,32 +50,47 @@ contract ChickenBondController is FeeGenerator {
     af.accReserve += (reserve * fees) / total;
     af.accExit += (exit * fees) / total;
 
-    accountedFees = unclaimedFees();
+    af.accountedFees = unclaimedFees;
   }
 
-  function distributeBuckets()
-    public
+  function distributeFees() external returns( uint256 stakingPool,
+      uint256 stabilityPool,
+      uint256 bootstrap,
+      uint256 team) {
+      (uint256 fee0, uint fee1)  = _claim();
+      (stakingPool, stabilityPool, bootstrap, team ) = _distributeFees(af0, fee0);
+      _distributeFees(af1, fee1);
+  }
+
+  function distributeBuckets() public returns (uint256 pendingBucket,
+      uint256 reserveBucket,
+      uint256 exitBucket) {
+    (uint256 fee0, uint fee1)  = _claim();
+
+  }
+
+  function _distributeBuckets(AccumulatedFees storage _af, uint256 _fee)
+    internal
     returns (
       uint256 pendingBucket,
       uint256 reserveBucket,
       uint256 exitBucket
     )
   {
-    uint256 fee = _claim();
+    pendingBucket = _af.accPending - _af.accPendingDebt;
+    reserveBucket = _af.accReserve - _af.accReserveDebt;
+    exitBucket = _af.accExit - _af.accExitDebt;
 
-    pendingBucket = af.accPending - af.accPendingDebt;
-    reserveBucket = af.accReserve - af.accReserveDebt;
-    exitBucket = af.accExit - af.accExitDebt;
+    assert(pendingBucket + reserveBucket + exitBucket == _fee);
 
-    assert(pendingBucket + reserveBucket + exitBucket == fee);
+    _af.accPendingDebt += _af.accPending;
+    _af.accReserveDebt += _af.accReserve;
+    _af.accExitDebt += _af.accExit;
 
-    af.accPendingDebt += af.accPending;
-    af.accReserveDebt += af.accReserve;
-    af.accExitDebt += af.accExit;
   }
 
-  function distributeFees()
-    external
+  function _distributeFees(AccumulatedFees storage _af, uint _fee)
+    internal
     returns (
       uint256 stakingPool,
       uint256 stabilityPool,
@@ -70,7 +98,7 @@ contract ChickenBondController is FeeGenerator {
       uint256 team
     )
   {
-    (uint256 pendingFee, uint256 reserveFee, uint256 exitFee) = distributeBuckets();
+    (uint256 pendingFee, uint256 reserveFee, uint256 exitFee) = _distributeBuckets(_af, _fee);
 
     stakingPool = ((pendingFee * 4) / 10) + reserveFee + exitFee;
     stabilityPool = ((pendingFee * 2) / 10);
